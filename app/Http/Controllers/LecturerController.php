@@ -1,0 +1,331 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\class_request_approval;
+use App\class_room;
+use App\Class_room_has_student;
+use App\Lecturer;
+use App\Lecturer_class_request;
+use App\Mail\LecturerClassRequested;
+use App\subject;
+use App\User;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
+
+class LecturerController extends Controller
+{
+    /**
+     * Create a new controller instance.
+     *
+     * @return void
+     */
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
+    /**
+     * index view of the student page
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function index()
+    {
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+
+
+        $classrooms = Class_room::with(['class_room_has_student.student.user','subject'])
+            ->where('lecturer_id','=',$lecturer->id)
+            ->get();
+
+        $students = Class_room::with(['class_room_has_student.student.user','subject'])
+            ->whereHas('class_room_has_student.student')
+            ->where('lecturer_id','=',$lecturer->id)
+            ->limit(3)
+            ->get();
+
+        $applied = Lecturer_class_request::with(['subject'])
+            ->where('lecturer_id','=',$lecturer->id)
+            ->get();
+
+        $requests = class_request_approval::with(['student_class_request.student.user','student_class_request.subject'])
+            ->where('lecturer_id','=',$lecturer->id)
+            ->whereNotNull('moderator_approved_at')
+            ->whereNull('lecturer_approved_at')
+            ->get();
+
+        $all_subjects = subject::all();
+        $all_classrooms = Class_room::all();
+
+
+        return view('lecturer.dashboard',['classrooms'=>$classrooms ,'applied'=>$applied ,
+            'requests'=>$requests ,'all_subjects'=>$all_subjects ,'all_classrooms'=>$all_classrooms,
+            'students'=>$students]);
+    }
+
+    /**
+     * panel of the request new course
+     *passing current days and subjects as parameters
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function newCourse()
+    {
+        $subjects = subject::all();
+
+        $days = ['monday','tuesday','wednesday' ,'thursday','friday','saturday','sunday'];
+
+        return view('lecturer.subjectRequest',['subjects'=>$subjects ,'days'=>$days]);
+    }
+
+    /**
+     * add new request to database
+     * send mail after adding request
+     * @param Request $request
+     * @return \Illuminate\Http\RedirectResponse
+     */
+
+    public function addNewRequest(Request $request)
+    {
+        $subject = $request->input('subject');
+        $day = $request->input('day');
+        $startTime = $request->input('startTime');
+        $endTime = $request->input('endTime');
+
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+
+        //if the user cannot be found
+        if (!$lecturer)
+        {
+            return redirect()->back()->with('error','Invalid user credential.please contact support');
+        }
+
+        $courseRequest = new Lecturer_class_request();
+        $courseRequest->lecturer_id = $lecturer->id;
+        $courseRequest->subject_id = $subject;
+        $courseRequest->day = $day;
+        $courseRequest->start_time = $startTime;
+        $courseRequest->end_time = $endTime;
+
+        if ($courseRequest->save())
+        {
+            $getRequest = Lecturer_class_request::with(['subject','lecturer.user'])->where('id','=',$courseRequest->id)->first();
+            //sending mail to user
+            Mail::to(Auth::user())
+                ->send(new LecturerClassRequested($getRequest));
+
+            return redirect()->back()->with('success','request sent successfully');
+        }
+        else
+            return redirect()->back()->with('error','something went wrong.please try again later');
+    }
+
+    /**
+     * show available courses panel
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function availableCourses()
+    {
+        $subjects = subject::all();
+        return view('lecturer.availableCourses',['subjects'=>$subjects]);
+    }
+    /**
+     * panel of the request new course with id
+     * came from available courses
+     *passing current days and subjects as parameters
+     * @param $id
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function newCourseSelected($id)
+    {
+        $subjects = subject::all();
+        $selected_subject = subject::find($id);
+
+        $days = ['monday','tuesday','wednesday' ,'thursday','friday','saturday','sunday'];
+
+        return view('lecturer.subjectRequest',['selected_subject'=>$selected_subject,'subjects'=>$subjects ,'days'=>$days]);
+    }
+
+
+    /**
+     * class request to the lecturer
+     * sent from moderator
+     * generated by students
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function classRequests()
+    {
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+        $requests = class_request_approval::with(['student_class_request.student.user','student_class_request.subject'])
+                    ->where('lecturer_id','=',$lecturer->id)
+                    ->whereNotNull('moderator_approved_at')
+                    ->get();
+
+        return view('lecturer.classesRequests',['requests'=>$requests]);
+    }
+
+    /**
+     * accepting class request
+     *setting value of class request approval lecture approved at timestamp to now
+     *moderator will notified
+     * @param $id
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function acceptRequest($id)
+    {
+        $request = class_request_approval::find($id);
+        $request->lecturer_approved_at = Carbon::now()->toDateTimeString();
+        if ($request->save())
+        {
+            return redirect('lecturer/classrooms/requests')->with('success','request accepted');
+        }
+        else
+            return redirect('lecturer/classrooms/requests')->with('error','something went wrong');
+    }
+
+    /**
+     * classroom details relevant to lecturer
+     * only show accepted classes
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function classrooms()
+    {
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+
+
+        $classrooms = Class_room::with(['class_room_has_student.student','subject'])
+                      ->where('lecturer_id','=',$lecturer->id)
+                      ->get();
+
+        return view('lecturer.myClassrooms',['classrooms'=>$classrooms]);
+
+    }
+
+    /**
+     * show students of a relevant classroom
+     *relating classroom has student, student and user
+     * @param $id
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function showStudents($id)
+    {
+        $students = Class_room_has_student::with('student.user')
+                   ->where('class_room_id','=',$id)
+                    ->get();
+        $classroom = class_room::with('subject')->where('id','=',$id)->first();
+
+        return view('lecturer.classroomStudents',['students'=>$students ,'classroom'=>$classroom]);
+    }
+
+    /**
+     * panel for show applied subject history
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function applyHistory()
+    {
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+
+        $requests = Lecturer_class_request::with(['subject'])
+            ->where('lecturer_id','=',$lecturer->id)
+            ->get();
+
+        return view('lecturer.applyHistory',['requests'=>$requests]);
+    }
+
+    /**
+     * deleting request when user cancelled
+     * using soft delete
+     * @param $id
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function deleteRequest($id)
+    {
+        $request = Lecturer_class_request::find($id);
+
+        if ($request->approved_at !== null)
+        {
+            return redirect()->back()->with('error','Request already approved');
+        }
+
+        if ($request->delete())
+        {
+            return redirect()->back()->with('success','Request cancelled successfully');
+        }
+        else
+            return redirect()->back()->with('error','Something went wrong!Try again later');
+    }
+
+
+    /**
+     * viewing profile with detail for update
+     * @return \Illuminate\Contracts\View\Factory|\Illuminate\View\View
+     */
+    public function profile()
+    {
+        $lecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+        return view('lecturer.profile',['lecturer'=>$lecturer]);
+    }
+
+    /**
+     * updating password of lecturer
+     * checking using hash method
+     * @param Request $request
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function updatePassword(Request $request)
+    {
+        $old_pw = $request->input('old_pw');
+        $new_pw = $request->input('new_pw');
+        $user = User::find(Auth::user()->id);
+
+        if ( !Hash::check($old_pw, $user->password)) {
+            return redirect()->back()->with('error','Password did not match');
+        }
+        else{
+            $user->password = Hash::make($new_pw);
+            $user->save();
+            return redirect()->back()->with('success','Password updated');
+        }
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $fname = $request->input('firstname');
+        $lname = $request->input('lastname');
+        $email = $request->input('email');
+        $mobile = $request->input('mobile');
+        $address = $request->input('address');
+        $city = $request->input('city');
+        $nic = $request->input('nic');
+        $dob = $request->input('dob');
+
+        $dob = Carbon::parse($dob)->format('Y-m-d');
+
+        $getLecturer = Lecturer::where('user_id','=',Auth::user()->id)->first();
+
+        $lecturer = Lecturer::find($getLecturer->id);
+        $user = User::find(Auth::user()->id);
+
+
+        $user->first_name = $fname;
+        $user->last_name = $lname;
+        $user->email = $email;
+
+        $lecturer->dob = $dob;
+        $lecturer->nic_no = $nic;
+        $lecturer->address = $address;
+        $lecturer->city = $city;
+        $lecturer->mobile_no = $mobile;
+
+        if ($user->save() && $lecturer->save())
+        {
+            return redirect()->back()->with('success','Your Details updated');
+        }
+        else{
+            return redirect()->back()->with('error','Something went wrong.try again later!');
+        }
+    }
+
+}
